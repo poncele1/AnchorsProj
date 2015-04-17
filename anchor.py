@@ -27,7 +27,7 @@ import sys
 
 
 #@@@@@@@Global Definitions Identifying This Particular Anchor@@@@@@@@@@@@
-ANCHOR_ID = "0" # Global value, must be unique for each anchor, identifying this hardware device.    
+ANCHOR_ID = "3" # Global value, must be unique for each anchor, identifying this hardware device.    
 ANCHOR_XY = (0,0) # Global value, must be uneque for each anchor, identifies the relative geographic x and y position in meters on a floor map at which this anchor is located 
 
 
@@ -187,8 +187,19 @@ def removeMonitor(mon):
         callAndResult(callToLinux)
         print mon + " is removed."
 
-
-
+'''
+Purpose: bring up and obtain an IP address for the interface if it goes down
+Preconditions: the desired interface has link connectivity and wpa_supplicant has been configured
+Postcondition: The desired interface has an ip address associated with it
+'''
+def optainIP(wlan):
+        print "re-upping and uptaining ip for " + wlan
+	callToLinux = string.replace("ifconfig " + wlan + " up", "\n", "")
+        callAndResult(callToLinux)
+        callToLinux = string.replace("dhclient " + wlan , "\n", "")
+        callAndResult(callToLinux)
+        print "Obtained ip for " + wlan
+      
 
 '''
 Purpose: packet handler for Probe request frames from clients puts timestamp, MAC address, SSID of interest, and RSSI in database
@@ -197,7 +208,7 @@ Notes: since the callback function for scapy packet filtering must be single arg
 def packetHandler(ntpClient, ntpServer, collection):
 	def packetParser(pkt):
 		if pkt.haslayer(Dot11):
-			if(pkt.type, pkt.subtype) == (0,4):
+			if(pkt.type, pkt.subtype,pkt.addr2) == (0,4,"24:a0:74:10:06:93"):
 				timeStamp = ntpTime(ntpClient,ntpServer) #don't include packets without a timestamp in the database, they don't match search queries and are thustly useless
 				if(timeStamp is not None):
 					print "Station MAC: {} has RSSI: {} and time stamp: {} seen from Anchor: {} at x: {} and y: {}".format(pkt.addr2, -(255-ord(pkt.notdecoded[-4:-3])),ctime(timeStamp), ANCHOR_ID, ANCHOR_XY[0], ANCHOR_XY[1])
@@ -206,7 +217,9 @@ def packetHandler(ntpClient, ntpServer, collection):
 						"ANCHORY" : ANCHOR_XY[1],
 						"Station_MAC":pkt.addr2,
 						"RSSI": -(255-ord(pkt.notdecoded[-4:-3])),
-						"TimeStamp": timeStamp }
+						"TimeStamp": timeStamp,
+                                                "HRTimeStamp": ctime(timeStamp)}
+                                                                                                                  
 					postID = collection.insert(post)
                                         print postID
 					
@@ -219,18 +232,23 @@ purpose: thread for sniffer method since it is blocking and it needs to be stopp
 preconditions: takes monitor interface, the ntp client returned from the clientInit method, the ntp server address, the connection to the database, and the database name  
 '''
 class SnifferThread(Thread):
-	def __init__ (self, monitor, ntpClient, ntpServer, collection):
+	def __init__ (self, monitor, wlan, ntpClient, ntpServer, collection):
 		Thread.__init__(self)
 		self.monitor = monitor
                 self.ntpClient = ntpClient
 		self.ntpServer = ntpServer
                 self.collection = collection
-        
+                self.wlan = wlan 
         def run(self):
+           while True:
 		try: 
 			sniff(iface=self.monitor, prn=packetHandler(self.ntpClient, self.ntpServer, self.collection))
 		except IOError as (errno, strerror):
 			print "I/O error({0}): {1}".format(errno, strerror) 
+                        obtainIP(self.wlan) 
+                        continue
+                break
+           
 
 
 '''
@@ -239,17 +257,19 @@ purpose: this method implements the application logic
 def main():
           
         #initialization of ntp and database
-        ntpServer = "bigben.cac.Washington.edu"
+        ntpServer = "pool.ntp.org"
         ntpClient = ntpClientInit(ntpServer)
         dataBaseID = "packetDigests"
         collectionID = "timedFrames"
-	conn = connectToServer("192.168.2.29","27017")
-        monitor = setMonitor(sys.argv[1])
+        wlan = sys.argv[1]
+	conn = connectToServer("192.168.2.6","27017")
+        monitor = setMonitor(wlan)
         database = conn[dataBaseID]
         collection = database[collectionID]   
         
 
-        sniffer = SnifferThread(monitor, ntpClient, ntpServer, collection)
+        showDBs(conn)
+        sniffer = SnifferThread(monitor, wlan, ntpClient, ntpServer, collection)
         sniffer.start()
 
         #Start putting packets in the database
@@ -261,7 +281,6 @@ def main():
 		#unfortunately, joining the snifferThread is not possible because it does not terminate unless sent SIGINT  and joining here only blocks
                 #until it does...which is never. 
         	removeMonitor(monitor) #pull the network out to generate IO exception and kill the sniffer. May cause memory leak, but workaround is reboot after fail
-     
 
 
 if __name__=="__main__":
